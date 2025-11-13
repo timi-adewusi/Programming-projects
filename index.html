@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>🧠 Gnosis Interface</title>
+<style>
+  :root {
+    --bg: #000;
+    --panel: #0b0b0b;
+    --accent: #00fff2;
+    --accent-soft: #00fff240;
+    --user: #9cff57;
+    --ai: #00fff2;
+    --text: #e5e5e5;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100vh;
+  }
+
+  header {
+    margin-top: 25px;
+    text-align: center;
+  }
+
+  header h1 {
+    font-size: 2.3em;
+    margin: 0;
+    color: var(--accent);
+    text-shadow: 0 0 10px var(--accent-soft);
+    letter-spacing: 2px;
+  }
+
+  header p {
+    margin-top: 8px;
+    font-size: 0.9em;
+    color: #888;
+  }
+
+  #chat {
+    width: 90%;
+    max-width: 900px;
+    height: 65vh;
+    margin: 25px 0;
+    padding: 20px;
+    background-color: var(--panel);
+    border: 1px solid #111;
+    border-radius: 12px;
+    box-shadow: 0 0 12px var(--accent-soft);
+    overflow-y: auto;
+    scroll-behavior: smooth;
+  }
+
+  .msg {
+    margin: 10px 0;
+    padding: 10px 15px;
+    border-radius: 12px;
+    line-height: 1.4;
+    max-width: 80%;
+    animation: fadeIn 0.3s ease;
+  }
+
+  .user {
+    background-color: #1c1c1c;
+    border-left: 3px solid var(--user);
+    color: var(--user);
+    align-self: flex-end;
+    margin-left: auto;
+  }
+
+  .ai {
+    background-color: #0f0f0f;
+    border-left: 3px solid var(--ai);
+    color: var(--ai);
+    align-self: flex-start;
+    margin-right: auto;
+  }
+
+  #inputArea {
+    width: 90%;
+    max-width: 900px;
+    display: flex;
+    gap: 10px;
+  }
+
+  input {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #222;
+    background-color: #111;
+    color: var(--text);
+    outline: none;
+  }
+
+  button {
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: none;
+    background-color: var(--accent);
+    color: #000;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  button:hover {
+    background-color: #0ff;
+    box-shadow: 0 0 10px var(--accent-soft);
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  footer {
+    margin-top: auto;
+    padding: 10px;
+    font-size: 0.8em;
+    color: #666;
+  }
+
+  footer span {
+    color: var(--accent);
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🧠 Gnosis Chat</h1>
+    <p>Where paradox meets reason.</p>
+  </header>
+
+  <div id="chat"></div>
+
+  <div id="inputArea">
+    <input id="input" type="text" placeholder="Type a thought or paradox..." />
+    <button onclick="sendMessage()">Send</button>
+  </div>
+
+  <footer>
+    <p>Powered by <span>Gnosis Logic</span></p>
+  </footer>
+
+<script>
+  const chatDiv = document.getElementById("chat");
+  const input = document.getElementById("input");
+
+  function addMessage(sender, text) {
+    const div = document.createElement("div");
+    div.classList.add("msg", sender);
+    div.textContent = text;
+    chatDiv.appendChild(div);
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+  }
+
+  async function sendMessage() {
+    const msg = input.value.trim();
+    if (!msg) return;
+    addMessage("user", msg);
+    input.value = "";
+    addMessage("ai", "⏳ Thinking...");
+
+    try {
+      const response = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg })
+      });
+      const data = await response.json();
+
+      const aiMessages = document.querySelectorAll(".ai");
+      if (aiMessages.length) aiMessages[aiMessages.length - 1].remove();
+
+      const primary = data.primary || { response: "No response", belief: 0.5 };
+      const reflection = data.reflection || { response: "No response", belief: 0.5 };
+
+      addMessage("ai", `✨ Primary: ${primary.response}\n(Belief: ${primary.belief})`);
+      addMessage("ai", `🔮 Reflection: ${reflection.response}\n(Belief: ${reflection.belief})`);
+    } catch (err) {
+      const aiMessages = document.querySelectorAll(".ai");
+      if (aiMessages.length) aiMessages[aiMessages.length - 1].remove();
+      addMessage("ai", "⚠️ Error connecting to backend: " + err);
+    }
+  }
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") sendMessage();
+  });
+</script>
+</body>
+</html>
