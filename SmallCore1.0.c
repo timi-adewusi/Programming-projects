@@ -2,180 +2,118 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdarg.h>
-#include <stdlib.h>
 
-FILE *out;
-char strings[100][32]; 
-int str_count = 0;
+/* Three output buffers: headers, function definitions, main() body */
+char headers[2000], funcs[20000], main_body[20000];
+char *target  = main_body;  /* points to whichever buffer we're filling */
+int  indent   = 1;          /* current indentation depth                 */
 
-typedef struct {
-    char name[32];
-    int is_array;
-} Symbol;
+/* String variable registry — so `say` knows to use %s vs %lld */
+char str_vars[100][32];
+int  str_count = 0;
 
-Symbol vars[100];
-int var_count = 0;
-
-char func_body[20000] = {0}; 
-char main_body[20000] = {0}; 
-char *current_target = main_body; 
-int indent_level = 0;
-
-char* trim(char *s) {
-    while(isspace((unsigned char)*s)) s++;
-    return s;
-}
-
-int is_string_var(char *name) {
-    for (int i = 0; i < str_count; i++) 
-        if (strcmp(strings[i], name) == 0) return 1;
+int is_str(char *name) {
+    for (int i = 0; i < str_count; i++)
+        if (!strcmp(str_vars[i], name)) return 1;
     return 0;
 }
 
-void emit(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    char buf[512];
-    vsprintf(buf, fmt, args);
-    strcat(current_target, buf);
-    va_end(args);
+/* Append an indented, formatted line to the current target buffer */
+void emit(int lvl, const char *fmt, ...) {
+    char tmp[512];
+    va_list ap; va_start(ap, fmt); vsnprintf(tmp, sizeof tmp, fmt, ap); va_end(ap);
+    char *p = target + strlen(target);
+    sprintf(p, "%*s%s", lvl * 4, "", tmp);
 }
 
-void emit_indented(const char *fmt, ...) {
-    char indent[100] = "";
-    // When in main_body and indent_level is 0, use level 1 for proper indentation inside main()
-    // Otherwise use the current indent_level
-    int level = (current_target == main_body && indent_level == 0) ? 1 : indent_level;
-    for (int i = 0; i < level * 4; i++) indent[i] = ' ';
-    strcat(current_target, indent);
-    va_list args;
-    va_start(args, fmt);
-    char buf[512];
-    vsprintf(buf, fmt, args);
-    strcat(current_target, buf);
-    va_end(args);
-}
+void compile_line(char *raw) {
+    char *l = raw;
+    while (isspace(*l)) l++;
+    if (*l == '\0' || *l == '#') return;
+    l[strcspn(l, "\n")] = '\0';  /* strip trailing newline */
 
-void compile_line(char *line) {
-    // Strip trailing newline
-    size_t len = strlen(line);
-    if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-    
-    line = trim(line);
-    if (*line == '\0' || *line == '#') return;
+    char tok[64] = {0};
+    sscanf(l, "%63s", tok);
 
-    char line_copy[256];
-    strcpy(line_copy, line);
-    char *tok = strtok(line_copy, " \t\r\n");
-    if (!tok) return;
+    if (!strcmp(tok, "use")) {
+        char mod[64]; sscanf(l, "use %63s", mod);
+        sprintf(headers + strlen(headers), "#include <%s.h>\n", mod);
 
-    // Safety: If we aren't in a function and not starting one, we must be in main
-    if (strcmp(tok, "fn") != 0 && indent_level == 0) {
-        current_target = main_body;
-    }
+    } else if (!strcmp(tok, "fn")) {
+        char name[64]; sscanf(l, "fn %63s", name);
+        target = funcs; indent = 1;
+        sprintf(target + strlen(target), "void %s() {\n", name);
 
-    if (strcmp(tok, "fn") == 0) {
-        char *name = strtok(NULL, " \t{");
-        current_target = func_body; 
-        emit("void f_%s() {\n", name);
-        indent_level = 1; 
-    } 
-    else if (strcmp(tok, "if") == 0) {
-        char *a = strtok(NULL, " \t");
-        char *op = strtok(NULL, " \t");
-        char *b = strtok(NULL, " \t{");
-        // Add v_ prefix only if operand doesn't start with a digit
-        char *a_prefix = (isdigit((unsigned char)*a) || a[0] == '-') ? "" : "v_";
-        char *b_prefix = (isdigit((unsigned char)*b) || b[0] == '-') ? "" : "v_";
-        emit_indented("if (%s%s %s %s%s) {\n", a_prefix, a, op, b_prefix, b);
-        indent_level++;
-    }
-    else if (strcmp(tok, "while") == 0) {
-        char *a = strtok(NULL, " \t");
-        char *op = strtok(NULL, " \t");
-        char *b = strtok(NULL, " \t{");
-        // Add v_ prefix only if operand doesn't start with a digit
-        char *a_prefix = (isdigit((unsigned char)*a) || a[0] == '-') ? "" : "v_";
-        char *b_prefix = (isdigit((unsigned char)*b) || b[0] == '-') ? "" : "v_";
+    } else if (!strcmp(tok, "call")) {
+        char name[64]; sscanf(l, "call %63s", name);
+        emit(indent, "%s();\n", name);
 
-        emit_indented("while (%s%s %s %s%s) {\n", a_prefix, a, op, b_prefix, b);
-        indent_level++;
-    }
-    else if (strcmp(tok, "else") == 0) {
-        // else on separate line - just emit else (closing brace already emitted)
-        emit_indented("else {\n");
-        indent_level++;  // Opening new block
-    }
-    else if (strcmp(tok, "}") == 0) {
-        indent_level--;
-        if (indent_level == 0) {
-            // End of function - emit without indentation
-            emit("}\n\n");
-            current_target = main_body; 
-        } else {
-            // End of If/While block - emit with indentation
-            emit_indented("}\n");
-        }
-    }
-    else if (strcmp(tok, "let") == 0) {
-        char *name = strtok(NULL, " \t=");
-        char *expr = trim(strchr(line, '=') + 1);
-        if (expr[0] == '[') {
-            int size = atoi(expr + 1);
-            emit_indented("long long v_%s[%d] = {0};\n", name, size);
-            strcpy(vars[var_count].name, name);
-            vars[var_count++].is_array = 1;
-        } else {
-            int exists = -1;
-            for(int i=0; i<var_count; i++) if(strcmp(vars[i].name, name) == 0) exists = i;
-            if (exists != -1) emit_indented("v_%s = %s;\n", name, expr);
-            else {
-                strcpy(vars[var_count].name, name);
-                vars[var_count++].is_array = 0;
-                emit_indented("long long v_%s = %s;\n", name, expr);
-            }
-        }
-    }
-    else if (strcmp(tok, "set") == 0) {
-        char *name = strtok(NULL, " [");
-        char *idx = strtok(NULL, " ]");
-        strtok(NULL, "="); 
-        char *val = trim(strtok(NULL, "\n\r"));
-        emit_indented("v_%s[%s] = %s;\n", name, idx, val);
-    }
-    else if (strcmp(tok, "say") == 0) {
-        char *val = trim(line + 3);
-        if (val[0] == '"') emit_indented("printf(\"%%s\\n\", %s);\n", val);
-        else {
-            char *prefix = (strncmp(val, "v_", 2) == 0) ? "" : "v_";
-            emit_indented("printf(\"%%lld\\n\", %s%s);\n", prefix, val);
-        }
-    }
-    else if (strcmp(tok, "ask") == 0) {
-        char *name = strtok(NULL, " \t");
-        emit_indented("long long v_%s; scanf(\"%%lld\", &v_%s);\n", name, name);
-    }
-    else if (strcmp(tok, "call") == 0) {
-        char *name = strtok(NULL, " \t\r\n");
-        emit_indented("f_%s();\n", name);
+    } else if (!strcmp(tok, "let")) {
+        emit(indent, "long long %s;\n", l + 4);
+
+    } else if (!strcmp(tok, "listen")) {
+        char var[64]; sscanf(l, "listen %63s", var);
+        strcpy(str_vars[str_count++], var);
+        emit(indent, "char %s[256]; scanf(\"%%255s\", %s);\n", var, var);
+
+    } else if (!strcmp(tok, "ask")) {
+        char var[64]; sscanf(l, "ask %63s", var);
+        emit(indent, "scanf(\"%%lld\", &%s);\n", var);
+
+    } else if (!strcmp(tok, "say")) {
+        char *val = l + 4;
+        char vname[64]; sscanf(val, "%63s", vname);
+        if (val[0] == '"' || is_str(vname))
+            emit(indent, "printf(\"%%s\\n\", %s);\n", val);
+        else
+            emit(indent, "printf(\"%%lld\\n\", %s);\n", val);
+
+    } else if (!strcmp(tok, "loop") || !strcmp(tok, "if")) {
+        char cond[128] = {0};
+        sscanf(l + strlen(tok), " %127[^{]", cond);
+        char *end = cond + strlen(cond) - 1;
+        while (end > cond && isspace(*end)) *end-- = '\0';
+        emit(indent, "%s (%s) {\n", !strcmp(tok, "loop") ? "while" : "if", cond);
+        indent++;
+
+    } else if (!strcmp(tok, "else")) {
+        /* The prior `}` line was emitted at (indent) level after decrementing.
+           We trim it off and replace with "} else {" at the same level. */
+        char *p = target + strlen(target);
+        /* Walk back past newline, }, and leading spaces on that line */
+        if (p > target) p--;         /* '\n' */
+        if (p > target) p--;         /* '}'  */
+        while (p > target && (*(p-1) == ' ' || *(p-1) == '\t')) p--;
+        *p = '\0';                   /* truncate buffer */
+        emit(indent, "} else {\n");
+        indent++;
+
+    } else if (!strcmp(tok, "}")) {
+        indent--;
+        emit(indent, "}\n");
+        if (indent == 0) { target = main_body; indent = 1; }
+
+    } else if (!strcmp(tok, "stop")) {
+        emit(indent, "break;\n");
+
+    } else {
+        emit(indent, "%s;\n", l);
     }
 }
 
 int main(int argc, char **argv) {
-    memset(func_body, 0, sizeof(func_body));
-    memset(main_body, 0, sizeof(main_body));
-
-    if (argc < 2) return 1;
+    if (argc < 2) { fprintf(stderr, "Usage: sc <file.sc>\n"); return 1; }
     FILE *in = fopen(argv[1], "r");
-    if (!in) return 1;
-    out = fopen("output.c", "w");
-    
+    if (!in) { perror(argv[1]); return 1; }
+
     char line[256];
-    while (fgets(line, sizeof(line), in)) compile_line(line);
-    
-    fprintf(out, "#include <stdio.h>\n\n%s\n", func_body);
-    fprintf(out, "int main() {\n%s\n    return 0;\n}\n", main_body);
-    
-    fclose(in); fclose(out);
+    while (fgets(line, sizeof line, in)) compile_line(line);
+    fclose(in);
+
+    FILE *out = fopen("output.c", "w");
+    if (!out) { perror("output.c"); return 1; }
+    fprintf(out, "#include <stdio.h>\n%s\n%s\nint main() {\n%s\n    return 0;\n}\n",
+            headers, funcs, main_body);
+    fclose(out);
     return 0;
 }
