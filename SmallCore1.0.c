@@ -80,7 +80,7 @@ void compile_line(char *line) {
         emit("void f_%s() {\n", name);
         indent_level = 1; 
     } 
-    else if (strcmp(tok, "if") == 0 || strcmp(tok, "while") == 0) {
+    else if (strcmp(tok, "if") == 0) {
         char *a = strtok(NULL, " \t");
         char *op = strtok(NULL, " \t");
         char *b = strtok(NULL, " \t{");
@@ -88,6 +88,17 @@ void compile_line(char *line) {
         char *a_prefix = (isdigit((unsigned char)*a) || a[0] == '-') ? "" : "v_";
         char *b_prefix = (isdigit((unsigned char)*b) || b[0] == '-') ? "" : "v_";
         emit_indented("if (%s%s %s %s%s) {\n", a_prefix, a, op, b_prefix, b);
+        indent_level++;
+    }
+    else if (strcmp(tok, "while") == 0) {
+        char *a = strtok(NULL, " \t");
+        char *op = strtok(NULL, " \t");
+        char *b = strtok(NULL, " \t{");
+        // Add v_ prefix only if operand doesn't start with a digit
+        char *a_prefix = (isdigit((unsigned char)*a) || a[0] == '-') ? "" : "v_";
+        char *b_prefix = (isdigit((unsigned char)*b) || b[0] == '-') ? "" : "v_";
+
+        emit_indented("while (%s%s %s %s%s) {\n", a_prefix, a, op, b_prefix, b);
         indent_level++;
     }
     else if (strcmp(tok, "else") == 0) {
