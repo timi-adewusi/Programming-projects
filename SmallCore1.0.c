@@ -7,10 +7,44 @@
 char headers[2000], funcs[20000], main_body[20000];
 char *target  = main_body;  /* points to whichever buffer we're filling */
 int  indent   = 1;          /* current indentation depth                 */
+int  in_function = 0;       /* are we inside a fn block?                 */
 
 /* String variable registry — so `say` knows to use %s vs %lld */
 char str_vars[100][32];
 int  str_count = 0;
+
+/* Symbol Table to store our definitions */
+typedef struct { char name[32]; char value[64]; } Symbol;
+Symbol symbols[100];
+int sym_count = 0;
+
+/* Global variable registry — variables shared between main and functions */
+char global_vars[100][32];
+int  global_count = 0;
+
+void add_global_var(char *name) {
+    for (int i = 0; i < global_count; i++)
+        if (!strcmp(global_vars[i], name)) return;  /* already added */
+    strcpy(global_vars[global_count++], name);
+}
+
+int is_global_var(char *name) {
+    for (int i = 0; i < global_count; i++)
+        if (!strcmp(global_vars[i], name)) return 1;
+    return 0;
+}
+
+/* Replace defined symbols in a line */
+void replace_symbols(char *line) {
+    for (int i = 0; i < sym_count; i++) {
+        char *p;
+        while ((p = strstr(line, symbols[i].name))) {
+            size_t len = strlen(symbols[i].name);
+            char tail[256]; strcpy(tail, p + len);
+            sprintf(p, "%s%s", symbols[i].value, tail);
+        }
+    }
+}
 
 int is_str(char *name) {
     for (int i = 0; i < str_count; i++)
@@ -35,12 +69,28 @@ void compile_line(char *raw) {
     char tok[64] = {0};
     sscanf(l, "%63s", tok);
 
+    if (!strcmp(tok, "def")) {
+        sscanf(l, "def %s = %s", symbols[sym_count].name, symbols[sym_count].value);
+        sym_count++;
+        return;
+    }
+
+    /* Replace any symbols in the line before processing */
+    char processed[256];
+    strcpy(processed, l);
+    replace_symbols(processed);
+    l = processed;
+    sscanf(l, "%63s", tok);  /* re-read tok after symbol replacement */
+
     if (!strcmp(tok, "use")) {
         char mod[64]; sscanf(l, "use %63s", mod);
         sprintf(headers + strlen(headers), "#include <%s.h>\n", mod);
 
     } else if (!strcmp(tok, "fn")) {
+        in_function = 1;
         char name[64]; sscanf(l, "fn %63s", name);
+        /* strip trailing '{' or whitespace from name */
+        name[strcspn(name, " {")] = '\0';
         target = funcs; indent = 1;
         sprintf(target + strlen(target), "void %s() {\n", name);
 
@@ -49,7 +99,46 @@ void compile_line(char *raw) {
         emit(indent, "%s();\n", name);
 
     } else if (!strcmp(tok, "let")) {
-        emit(indent, "long long %s;\n", l + 4);
+        char varname[64] = {0};
+        sscanf(l + 4, "%63s", varname);
+        /* strip any trailing '=' that got merged in */
+        varname[strcspn(varname, "=")] = '\0';
+
+        int already_global = is_global_var(varname);
+
+        char *eq = strchr(l, '=');
+        if (eq) {
+            char *rhs = eq + 1;
+            while (isspace(*rhs)) rhs++;
+
+            if (rhs[0] == '@' && rhs[1] == '(') {
+                char *close = strchr(rhs + 2, ')');
+                if (close) {
+                    char addr_expr[128];
+                    strncpy(addr_expr, rhs + 2, close - rhs - 2);
+                    addr_expr[close - rhs - 2] = '\0';
+                    if (already_global)
+                        emit(indent, "%s = *((long long*)(%s));\n", varname, addr_expr);
+                    else
+                        emit(indent, "long long %s = *((long long*)(%s));\n", varname, addr_expr);
+                }
+            } else if (strstr(rhs, "malloc") || strstr(rhs, "calloc")) {
+                if (already_global)
+                    emit(indent, "%s = (long long)%s;\n", varname, rhs);
+                else
+                    emit(indent, "long long %s = (long long)%s;\n", varname, rhs);
+            } else {
+                if (already_global)
+                    emit(indent, "%s = %s;\n", varname, rhs);
+                else
+                    emit(indent, "long long %s = %s;\n", varname, rhs);
+            }
+        } else {
+            if (already_global)
+                emit(indent, "%s = 0;\n", varname);
+            else
+                emit(indent, "long long %s = 0;\n", varname);
+        }
 
     } else if (!strcmp(tok, "listen")) {
         char var[64]; sscanf(l, "listen %63s", var);
@@ -62,6 +151,7 @@ void compile_line(char *raw) {
 
     } else if (!strcmp(tok, "say")) {
         char *val = l + 4;
+        while (isspace(*val)) val++;
         char vname[64]; sscanf(val, "%63s", vname);
         if (val[0] == '"' || is_str(vname))
             emit(indent, "printf(\"%%s\\n\", %s);\n", val);
@@ -77,26 +167,76 @@ void compile_line(char *raw) {
         indent++;
 
     } else if (!strcmp(tok, "else")) {
-        /* The prior `}` line was emitted at (indent) level after decrementing.
-           We trim it off and replace with "} else {" at the same level. */
         char *p = target + strlen(target);
-        /* Walk back past newline, }, and leading spaces on that line */
         if (p > target) p--;         /* '\n' */
         if (p > target) p--;         /* '}'  */
         while (p > target && (*(p-1) == ' ' || *(p-1) == '\t')) p--;
-        *p = '\0';                   /* truncate buffer */
+        *p = '\0';
         emit(indent, "} else {\n");
         indent++;
 
     } else if (!strcmp(tok, "}")) {
         indent--;
         emit(indent, "}\n");
-        if (indent == 0) { target = main_body; indent = 1; }
+        if (indent == 0) {
+            target = main_body;
+            indent = 1;
+            in_function = 0;
+        }
 
     } else if (!strcmp(tok, "stop")) {
         emit(indent, "break;\n");
 
     } else {
+        /* free() — needs void* cast */
+        if (strstr(l, "free(")) {
+            char var[64];
+            if (sscanf(l, "free(%63[^)])", var) == 1) {
+                emit(indent, "free((void*)%s);\n", var);
+                return;
+            }
+        }
+
+        /* RHS dereference: var = @(expr) */
+        char *eq = strchr(l, '=');
+        if (eq) {
+            char *rhs = eq + 1;
+            while (isspace(*rhs)) rhs++;
+            if (rhs[0] == '@' && rhs[1] == '(') {
+                char *close = strchr(rhs + 2, ')');
+                if (close) {
+                    char varname[64], addr_expr[128];
+                    strncpy(varname, l, eq - l);
+                    varname[eq - l] = '\0';
+                    /* trim trailing spaces from varname */
+                    int vlen = strlen(varname);
+                    while (vlen > 0 && isspace(varname[vlen-1])) varname[--vlen] = '\0';
+                    strncpy(addr_expr, rhs + 2, close - rhs - 2);
+                    addr_expr[close - rhs - 2] = '\0';
+                    emit(indent, "%s = *((long long*)(%s));\n", varname, addr_expr);
+                    return;
+                }
+            }
+        }
+
+        /* LHS dereference: @(addr) = val */
+        if (l[0] == '@') {
+            char *eq2 = strchr(l, '=');
+            if (eq2) {
+                char addr_expr[128], val[64];
+                char *open  = strchr(l, '(');
+                char *close = strchr(l, ')');
+                if (open && close) {
+                    strncpy(addr_expr, open + 1, close - open - 1);
+                    addr_expr[close - open - 1] = '\0';
+                    sscanf(eq2 + 1, " %63[^\n]", val);
+                    emit(indent, "*((long long*)(%s)) = %s;\n", addr_expr, val);
+                    return;
+                }
+            }
+        }
+
+        /* Default: pass through as raw C */
         emit(indent, "%s;\n", l);
     }
 }
@@ -110,10 +250,64 @@ int main(int argc, char **argv) {
     while (fgets(line, sizeof line, in)) compile_line(line);
     fclose(in);
 
+    /* Find variables declared in main that are also used in functions,
+       and promote them to globals so functions can access them. */
+    char declared_vars[100][32];
+    int  declared_count = 0;
+
+    char main_copy[20000];
+    strcpy(main_copy, main_body);
+    char *p = main_copy;
+    while ((p = strstr(p, "long long "))) {
+        char varname[64];
+        if (sscanf(p, "long long %63s", varname) == 1) {
+            /* strip trailing punctuation */
+            int len = strlen(varname);
+            while (len > 0 && (varname[len-1] == '=' || varname[len-1] == ';' || varname[len-1] == ' '))
+                varname[--len] = '\0';
+            strcpy(declared_vars[declared_count++], varname);
+        }
+        p += 10;
+    }
+
+    for (int i = 0; i < declared_count; i++) {
+        if (strstr(funcs, declared_vars[i])) {
+            char search_str[128];
+            sprintf(search_str, "long long %s", declared_vars[i]);
+            if (!strstr(funcs, search_str)) {
+                add_global_var(declared_vars[i]);
+                /* Remove the local "long long varname" declaration from main_body
+                   so the global is used instead (avoid shadowing). */
+                char *decl = strstr(main_body, search_str);
+                if (decl) {
+                    size_t skip = strlen("long long ");
+                    memmove(decl, decl + skip, strlen(decl + skip) + 1);
+                }
+            }
+        }
+    }
+
     FILE *out = fopen("output.c", "w");
     if (!out) { perror("output.c"); return 1; }
-    fprintf(out, "#include <stdio.h>\n%s\n%s\nint main() {\n%s\n    return 0;\n}\n",
-            headers, funcs, main_body);
+
+    /* Build global variable declarations */
+    char globals_decl[5000] = {0};
+    for (int i = 0; i < global_count; i++)
+        sprintf(globals_decl + strlen(globals_decl), "long long %s = 0;\n", global_vars[i]);
+
+    fprintf(out,
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "%s\n"          /* extra headers (use ...) */
+        "%s\n"          /* global var declarations  */
+        "%s\n"          /* function definitions     */
+        "int main() {\n"
+        "%s\n"          /* main body                */
+        "    return 0;\n"
+        "}\n",
+        headers, globals_decl, funcs, main_body);
+
     fclose(out);
+    printf("Compiled to output.c\n");
     return 0;
 }
