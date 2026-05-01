@@ -5,10 +5,10 @@
 #include <string.h>
 #include <string.h>
 
-void push(long long val);
+long long push(long long val);
 long long pop();
 
-void concat_stack() {
+long long concat_stack() {
     char* str2 = (char*)pop(); // Second string
     char* str1 = (char*)pop(); // First string
     
@@ -18,6 +18,7 @@ void concat_stack() {
     strcat(result, str2);
     
     push((long long)result); // Return the pointer to the new string
+    return 0;
 }
 /**
  * MATH WRAPPERS
@@ -86,8 +87,9 @@ void print_string(long long addr) {
 static long long stack[256];
 static int sp = 0; // Stack Pointer
 
-void push(long long val) {
+long long push(long long val) {
     if (sp < 256) stack[sp++] = val;
+    return 0;
 }
 
 long long pop() {
