@@ -277,6 +277,34 @@ long long pop();
     if (!strcmp(tok, "call")) {
         char rest[256] = {0};
         sscanf(l, "call %255[^\n]", rest);
+        
+        /* Wrap string literals in (long long) cast */
+        char processed[256] = {0};
+        char *src = rest;
+        char *dst = processed;
+        int in_string = 0;
+        
+        while (*src && dst - processed < (int)sizeof(processed) - 20) {
+            if (*src == '"') {
+                if (!in_string) {
+                    /* Starting a string, add (long long) before it */
+                    dst += sprintf(dst, "(long long)\"");
+                    src++;
+                    in_string = 1;
+                } else {
+                    /* Ending a string */
+                    *dst++ = '"';
+                    src++;
+                    in_string = 0;
+                }
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        
+        strcpy(rest, processed);
+        
         /* Add () if the call has no argument list */
         if (!strchr(rest, '('))
             emit("%s();\n", rest);
@@ -367,11 +395,22 @@ long long pop();
             // It's a literal string: say "Hello"
             emit("printf(\"%%s\\n\", %s);\n", val);
         } else {
-            // It's a variable. We cast it to (char*) so C prints the text, 
-            // not the memory address number.
-            char vname[64] = {0};
-            sscanf(val, "%63s", vname);
-            emit("printf(\"%%s\\n\", (char*)%s);\n", vname);
+            // Check if we have a type specifier: say num x or say str x
+            char type[16] = {0}, vname[64] = {0};
+            int matches = sscanf(val, "%15s %63s", type, vname);
+            
+            if (matches == 2 && (!strcmp(type, "num") || !strcmp(type, "str"))) {
+                // Explicit type given
+                if (!strcmp(type, "num")) {
+                    emit("printf(\"%%lld\\n\", %s);\n", vname);
+                } else {
+                    emit("printf(\"%%s\\n\", (char*)%s);\n", vname);
+                }
+            } else {
+                // Default: treat as string (backward compatible with existing code)
+                sscanf(val, "%63s", vname);
+                emit("printf(\"%%s\\n\", (char*)%s);\n", vname);
+            }
         }
         return;
     }
@@ -522,6 +561,7 @@ int main(int argc, char **argv) {
     fprintf(out_file,
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n"
+        "#include \"engine.h\"\n"
         "%s"        /* extra headers (use / ext) */
         "\n"
         "%s"        /* global variable declarations */
