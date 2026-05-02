@@ -29,6 +29,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include "engine.h"
+#include <time.h>
 
 /* ── Output buffers ─────────────────────────────────────────────────────── */
 static char headers[4000];
@@ -52,6 +54,10 @@ static int  strvar_n = 0;
 /* ── Global-variable registry (variables used in both main and fns) ─────── */
 static char gvars[256][64];
 static int  gvar_n = 0;
+
+/* ── All-declared-variables registry (prevents re-decl in nested scopes) ── */
+static char decl_vars[512][64];
+static int  decl_var_n = 0;
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Helpers
@@ -100,6 +106,20 @@ static void register_gvar(const char *name) {
 static int is_gvar(const char *name) {
     for (int i = 0; i < gvar_n; i++)
         if (!strcmp(gvars[i], name)) return 1;
+    return 0;
+}
+
+/* Register a variable as declared (any scope). */
+static void register_decl(const char *name) {
+    for (int i = 0; i < decl_var_n; i++)
+        if (!strcmp(decl_vars[i], name)) return;
+    strncpy(decl_vars[decl_var_n++], name, 63);
+}
+
+/* Returns 1 if this variable has already been declared anywhere. */
+static int is_decl(const char *name) {
+    for (int i = 0; i < decl_var_n; i++)
+        if (!strcmp(decl_vars[i], name)) return 1;
     return 0;
 }
 
@@ -160,8 +180,7 @@ static void compile_line(char *raw) {
     rtrim(l);
 
     /* Extract first token */
-    char tok[64] = {0};void push(long long val);
-    long long pop();
+    char tok[64] = {0};
     sscanf(l, "%63s", tok);
 
     /* ── def: text-substitution symbol ───────────────────────────────────── */
@@ -200,6 +219,8 @@ static void compile_line(char *raw) {
         out       = funcs;
         depth     = 1;
         fn_braces = 1;         /* fn's own { is one open brace */
+        /* Reset local decl tracking for this new function scope */
+        decl_var_n = 0;
         char buf[128];
         snprintf(buf, sizeof buf, "void %s() {\n", name);
         strncat(out, buf, sizeof funcs - strlen(out) - 1);
@@ -216,6 +237,26 @@ static void compile_line(char *raw) {
                 /* Just closed the fn's outermost brace */
                 out   = body;
                 depth = 1;
+            }
+        }
+        
+        /* Check if 'else' is on the same line after the } */
+        char *else_pos = strstr(l, "else");
+        if (else_pos && else_pos > strchr(l, '}')) {
+            /* We have } else on the same line, handle the else now */
+            char *end = out + strlen(out);
+            if (end > out && *(end-1) == '\n') end--;
+            while (end > out && *(end-1) != '\n') end--;
+            *end = '\0';
+            emit("} else {\n");
+            depth++;
+            if (fn_braces > 0) fn_braces++;
+            
+            /* Check for { after else */
+            char *brace_pos = strchr(else_pos, '{');
+            if (brace_pos) {
+                /* There's a { on the same line, don't need to parse it separately */
+                return;
             }
         }
         return;
@@ -243,11 +284,14 @@ static void compile_line(char *raw) {
         int  matched = sscanf(l, "ext %63[^(](%255[^)])", name, args);
         rtrim(name);
 
-        /* For raw C math builtins (pow/sqrt/log), just ensure math.h is included */
-        if (!strcmp(name, "pow") || !strcmp(name, "sqrt") || !strcmp(name, "log")) {
-            emit_header("#include <math.h>\n");
-            return;
-        }
+        /* Skip stdlib/math/time builtins already declared by their headers */
+        static const char *builtins[] = {
+            "pow","sqrt","log","rand","srand","time","printf","scanf",
+            "malloc","calloc","realloc","free","memset","memcpy","strlen",
+            "strcpy","strcat","strcmp",NULL
+        };
+        for (int bi = 0; builtins[bi]; bi++)
+            if (!strcmp(name, builtins[bi])) return;
 
         char decl[512] = {0};
         snprintf(decl, sizeof decl, "extern long long %s(", name);
@@ -320,17 +364,19 @@ static void compile_line(char *raw) {
         sscanf(l + 4, " %63[^= \t]", name);
 
         char *eq  = strchr(l, '=');
-        int already = is_gvar(name);
+        int already = is_gvar(name) || is_decl(name);
 
         if (!eq) {
             /* Declaration with no initialiser */
-            if (already) emit("%s = 0;\n", name);
-            else         emit("long long %s = 0;\n", name);
+            if (!already) { register_decl(name); emit("long long %s = 0;\n", name); }
+            else           emit("%s = 0;\n", name);
             return;
         }
 
         char *rhs = eq + 1;
         while (isspace((unsigned char)*rhs)) rhs++;
+
+        if (!already) register_decl(name);
 
         /* let x = call f(...)  — function call returning a value */
         if (strncmp(rhs, "call ", 5) == 0) {
@@ -390,26 +436,22 @@ static void compile_line(char *raw) {
     if (!strcmp(tok, "say")) {
         char *val = l + 3;
         while (isspace((unsigned char)*val)) val++;
-        
+
         if (val[0] == '"') {
-            // It's a literal string: say "Hello"
+            /* say "literal" */
             emit("printf(\"%%s\\n\", %s);\n", val);
+        } else if (val[0] == '\0') {
+            emit("printf(\"\\n\");\n");
         } else {
-            // Check if we have a type specifier: say num x or say str x
+            /* say varname — check for explicit type prefix: say str x */
             char type[16] = {0}, vname[64] = {0};
             int matches = sscanf(val, "%15s %63s", type, vname);
-            
-            if (matches == 2 && (!strcmp(type, "num") || !strcmp(type, "str"))) {
-                // Explicit type given
-                if (!strcmp(type, "num")) {
-                    emit("printf(\"%%lld\\n\", %s);\n", vname);
-                } else {
-                    emit("printf(\"%%s\\n\", (char*)%s);\n", vname);
-                }
-            } else {
-                // Default: treat as string (backward compatible with existing code)
-                sscanf(val, "%63s", vname);
+            if (matches == 2 && !strcmp(type, "str")) {
                 emit("printf(\"%%s\\n\", (char*)%s);\n", vname);
+            } else {
+                /* Default: treat as number */
+                sscanf(val, "%63s", vname);
+                emit("printf(\"%%lld\\n\", (long long)%s);\n", vname);
             }
         }
         return;
@@ -421,18 +463,69 @@ static void compile_line(char *raw) {
         emit("printf(\"%%lld\\n\", %s);\n", vname);
         return;
     }
+
+    /* ── show: print a number inline (no newline) ─────────────────────────── */
+    if (!strcmp(tok, "show")) {
+        char vname[64] = {0};
+        sscanf(l, "show %63s", vname);
+        emit("printf(\"%%lld \", (long long)%s);\n", vname);
+        return;
+    }
+
+    /* ── showstr: print a string inline (no newline) ──────────────────────── */
+    if (!strcmp(tok, "showstr")) {
+        char *val = l + 7;
+        while (isspace((unsigned char)*val)) val++;
+        if (val[0] == '"')
+            emit("printf(\"%%s\", %s);\n", val);
+        else
+            emit("printf(\"%%s\", (char*)%s);\n", val);
+        return;
+    }
     /* ── if / loop: open a block ─────────────────────────────────────────── */
     if (!strcmp(tok, "if") || !strcmp(tok, "loop")) {
-        char cond[256] = {0};
-        /* Grab everything between the keyword and the optional '{' */
+        const char *kw = !strcmp(tok, "loop") ? "while" : "if";
         const char *after = l + strlen(tok);
         while (isspace((unsigned char)*after)) after++;
+
+        /* Check for single-line form:  if cond { body } */
+        char *open_brace  = strchr(after, '{');
+        char *close_brace = open_brace ? strrchr(after, '}') : NULL;
+        if (open_brace && close_brace && close_brace > open_brace) {
+            /* Extract condition (between keyword and '{') */
+            char cond[256] = {0};
+            size_t clen = (size_t)(open_brace - after);
+            if (clen >= sizeof cond) clen = sizeof cond - 1;
+            strncpy(cond, after, clen);
+            rtrim(cond);
+
+            /* Extract body (between '{' and '}') */
+            char body_stmt[512] = {0};
+            size_t blen = (size_t)(close_brace - open_brace - 1);
+            if (blen >= sizeof body_stmt) blen = sizeof body_stmt - 1;
+            strncpy(body_stmt, open_brace + 1, blen);
+            /* Trim leading/trailing whitespace from body */
+            char *bs = body_stmt;
+            while (isspace((unsigned char)*bs)) bs++;
+            rtrim(bs);
+
+            emit("%s (%s) {\n", kw, cond);
+            depth++;
+            if (fn_braces > 0) fn_braces++;
+            /* Compile the inner statement */
+            compile_line(bs);
+            depth--;
+            if (fn_braces > 0) fn_braces--;
+            emit("}\n");
+            return;
+        }
+
+        /* Multi-line form: condition is everything up to the optional '{' */
+        char cond[256] = {0};
         strncpy(cond, after, sizeof cond - 1);
-        /* Strip trailing '{' and whitespace */
         char *end = cond + strlen(cond) - 1;
         while (end >= cond && (isspace((unsigned char)*end) || *end == '{'))
             *end-- = '\0';
-        const char *kw = !strcmp(tok, "loop") ? "while" : "if";
         emit("%s (%s) {\n", kw, cond);
         depth++;
         if (fn_braces > 0) fn_braces++;
@@ -488,7 +581,13 @@ static void compile_line(char *raw) {
     }
 
     /* ── Fallback: emit verbatim as a C statement ─────────────────────────── */
-    emit("%s;\n", l);
+    {
+        int n = (int)strlen(l);
+        if (n > 0 && l[n-1] == ';')
+            emit("%s\n", l);   /* already has semicolon */
+        else
+            emit("%s;\n", l);
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
