@@ -8,6 +8,39 @@
 long long push(long long val);
 long long pop();
 
+static char *arena_base = NULL;
+static size_t arena_size = 1024 * 1024 * 100; // 100MB pool
+static size_t arena_offset = 0;
+
+long long init_engine() {
+    if (!arena_base) arena_base = malloc(arena_size);
+    arena_offset = 0;
+    printf("[Engine] Arena Initialized\n");
+    return 0;
+}
+
+// The "Magic" function for SmallCore
+long long take(long long bytes) {
+    if (arena_offset + bytes > arena_size) return 0; // Out of memory
+    void *ptr = arena_base + arena_offset;
+    arena_offset += bytes;
+    return (long long)ptr;
+}
+
+long long wipe() {
+    arena_offset = 0; // Instant "free" of everything!
+    return 0;
+}
+
+long long get_at(long long base, long long offset) {
+    return *((long long*)(base + (offset * 8)));
+}
+
+long long set_at(long long base, long long offset, long long val) {
+    *((long long*)(base + (offset * 8))) = val;
+    return 0;
+}
+
 long long concat_stack() {
     char* str2 = (char*)pop(); // Second string
     char* str1 = (char*)pop(); // First string
@@ -39,12 +72,13 @@ long long my_sqrt(long long n) {
  */
 
 // Clears the terminal screen
-void clear_screen() {
+long clear_screen() {
     #ifdef _WIN32
         system("cls");
     #else
         system("clear");
     #endif
+    return 0;
 }
 
 // Returns a random number between 0 and max
@@ -59,7 +93,7 @@ long long get_random(long long max) {
 }
 
 // Pauses execution for X milliseconds
-void sleep_ms(long long ms) {
+long long sleep_ms(long long ms) {
     #ifdef _WIN32
         _sleep(ms);
     #else
@@ -68,19 +102,23 @@ void sleep_ms(long long ms) {
         ts.tv_nsec = (ms % 1000) * 1000000;
         nanosleep(&ts, NULL);
     #endif
+    return 0;
 }
 
-void say_part(char* s) {
+long long say_part(char* s) {
     printf("%s", s);
+    return 0;
 }
 
-void say_num_part(long long n) {
+long long say_num_part(long long n) {
     printf("%lld", n);
+    return 0;
 }
 
-void print_string(long long addr) {
+long long print_string(long long addr) {
     // Cast the number back to a string pointer and print it
     printf("Hello, %s!\n", (char*)addr);
+    return 0;
 }
 
 // --- Value Stack for Params and Returns ---
@@ -97,8 +135,9 @@ long long pop() {
     return 0;
 }
 
-void say_str(long long addr) {
+long long say_str(long long addr) {
     printf("%s\n", (char*)addr);
+    return 0;
 }
 
 /**
@@ -107,6 +146,7 @@ void say_str(long long addr) {
  */
 
 // Fills a block of memory with a specific byte (useful for clearing arrays)
-void mem_set(long long addr, long long val, long long size) {
+long long mem_set(long long addr, long long val, long long size) {
     memset((void*)addr, (int)val, (size_t)size);
+    return 0;
 }
