@@ -161,7 +161,7 @@ static void compile_line(char *raw) {
 
     /* Extract first token */
     char tok[64] = {0};void push(long long val);
-long long pop();
+    long long pop();
     sscanf(l, "%63s", tok);
 
     /* ── def: text-substitution symbol ───────────────────────────────────── */
@@ -415,6 +415,12 @@ long long pop();
         return;
     }
 
+    if (!strcmp(tok, "saynum")) {
+        char vname[64] = {0};
+        sscanf(l, "saynum %63s", vname);
+        emit("printf(\"%%lld\\n\", %s);\n", vname);
+        return;
+    }
     /* ── if / loop: open a block ─────────────────────────────────────────── */
     if (!strcmp(tok, "if") || !strcmp(tok, "loop")) {
         char cond[256] = {0};
