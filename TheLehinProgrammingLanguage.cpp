@@ -231,7 +231,7 @@ enum Opcode : uint8_t {
     JMP = 0x60, JZ = 0x61, JNZ = 0x62, CALL = 0x63, RET = 0x64,
     ALLOCLOCAL = 0x70, LOADLOCAL = 0x71, STORELOCAL = 0x72,
     PUSH = 0x80, POP = 0x81,
-    PRINT = 0x90, EMIT = 0x91, READ = 0x92, PRINTSTR = 0x93,
+    PRINT = 0x90, EMIT = 0x91, READ = 0x92, PRINTSTR = 0x93, READSTR = 0x94
 };
 
 enum class Pattern { NONE, IMM, REG, REG_IMM, REG_REG, REG_REG_REG, REG_ANY, REG_MEM,MEM_REG };
@@ -260,6 +260,10 @@ static const std::unordered_map<std::string, InstrInfo> INSTR_TABLE = {
     {"PUSH", {PUSH, Pattern::REG}}, {"POP", {POP, Pattern::REG}},
     {"PRINT", {PRINT, Pattern::REG}}, {"EMIT", {EMIT, Pattern::REG}},
     {"READ", {READ, Pattern::REG}}, {"PRINTSTR", {PRINTSTR, Pattern::REG}},
+    {"READSTR", {READSTR, Pattern::REG_IMM}},
+    {"ALLOCLOCAL", {ALLOCLOCAL, Pattern::REG_IMM}},
+    {"LOADLOCAL", {LOADLOCAL, Pattern::REG_IMM}},
+    {"STORELOCAL", {STORELOCAL, Pattern::REG_IMM}}
 };
 
 static int operandBytes(Pattern p) {
@@ -1119,15 +1123,40 @@ private:
 
         return regStr(op);
     }
-    void emitInstr(
-        std::ostream& out,
-        const IRItem& item) const
-    {
+    void emitInstr(std::ostream& out, const IRItem& item) const {
+        auto immStr = [&](const Operand& o) -> std::string {
+            if (o.kind == Operand::Imm) return std::to_string(o.immValue);
+            if (o.kind == Operand::Sym) {
+                auto s = syms_.lookup(o.symName);
+                if (!s) {
+                    diag_.error(item.line, "undefined symbol '" + o.symName + "'");
+                    return "0";
+                }
+                if (s->kind == SymKind::Data) return std::to_string(s->address);
+                return "&&L_" + s->ns + "_" + o.symName;
+            }
+            return "0";
+        };
         const auto& a = item.operands;
 
-switch (item.op) {
+        switch (item.op) {
             case HALT: out << "    goto L_end;\n"; break;
-            case MOV: out << "    " << regStr(a[0]) << " = " << operandValue(a[1], item.line) << ";\n"; break;
+            case MOV: {
+                std::string valStr = "0";
+                if (a[1].kind == Operand::Imm) {
+                    valStr = std::to_string(a[1].immValue);
+                } else if (a[1].kind == Operand::Sym) {
+                    auto s = syms_.lookup(a[1].symName);
+                    if (s && s->kind == SymKind::Data) {
+                        // Point directly to the global data array offset
+                        valStr = "(int64_t)(data + " + std::to_string(s->address) + ")";
+                    } else {
+                        valStr = immStr(a[1]);
+                    }
+                }
+                out << "    " << regStr(a[0]) << " = " << valStr << ";\n";
+                break;
+            }
             case MOVR: out << "    " << regStr(a[0]) << " = " << regStr(a[1]) << ";\n"; break;
             case ADD: out << "    " << regStr(a[0]) << " = " << regStr(a[1]) << " + " << regStr(a[2]) << ";\n"; break;
             case SUB: out << "    " << regStr(a[0]) << " = " << regStr(a[1]) << " - " << regStr(a[2]) << ";\n"; break;
@@ -1170,12 +1199,22 @@ switch (item.op) {
                 }
                 break;
             }
+            case READSTR:
+                out << "    fgets((char*)(locals + " << regStr(a[0]) << "), " 
+                    << immStr(a[1]) << ", stdin);\n"; // Use immStr for the second operand
+                break;
+            case ALLOCLOCAL:
+                out << "    " << regStr(a[0]) << " = lcnt;\n";
+                out << "    lcnt += " << immStr(a[1]) << ";\n";
+                break;
+            case LOADLOCAL:  out << "    " << regStr(a[0]) << " = locals[lcnt - " << immStr(a[1]) << "];\n"; break;
+            case STORELOCAL: out << "    locals[lcnt - " << immStr(a[1]) << "] = " << regStr(a[0]) << ";\n"; break;
             case PUSH: out << "    stack[sp++] = " << regStr(a[0]) << ";\n"; break;
             case POP:  out << "    " << regStr(a[0]) << " = stack[--sp];\n"; break;
             case PRINT:    out << "    printf(\"%lld\\n\", (long long)" << regStr(a[0]) << ");\n"; break;
             case EMIT:     out << "    putchar((int)" << regStr(a[0]) << ");\n"; break;
             case READ:     out << "    " << regStr(a[0]) << " = readnum();\n"; break;
-            case PRINTSTR: out << "    printf(\"%s\\n\", (char*)(data + " << regStr(a[0]) << "));\n"; break;
+            case PRINTSTR: out << "    printf(\"%s\\n\", (char*)" << regStr(a[0]) << ");\n"; break;
         }
     }
 
